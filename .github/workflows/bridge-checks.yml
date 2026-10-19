@@ -1,0 +1,109 @@
+name: Bridge checks
+on:
+  push:
+    branches: ['DevTransgenia2026/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified ref
+        with:
+          persist-credentials: false
+      - name: Verified Go toolchain (no machine credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --max-time 120 https://go.dev/dl/go1.26.0.linux-amd64.tar.gz -o "$RUNNER_TEMP/go.tar.gz"
+          printf '%s  %s\n' aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235 "$RUNNER_TEMP/go.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/go.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/go/bin/go" version
+      - name: Locked dependencies, formatting, tests, race and vet
+        working-directory: whatsapp-bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          test -z "$(gofmt -l *.go)"
+          go mod download
+          go mod verify
+          go test -count=1 -race -timeout=90s ./...
+          go vet ./...
+          go build -trimpath -o "$RUNNER_TEMP/whatsapp-bridge" .
+          git diff --exit-code -- go.mod go.sum
+      - name: Deadline regression must fail against the legacy wait
+        working-directory: whatsapp-bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/go/bin:$PATH"
+          if BRIDGE_TEST_LEGACY_QR_WAIT=1 go test -count=1 -timeout=10s -run '^TestQRDeadlineRegression$' ./... > "$RUNNER_TEMP/legacy-red.log" 2>&1; then
+            printf 'Legacy regression unexpectedly passed\n'
+            exit 1
+          fi
+          grep -q -- '--- FAIL: TestQRDeadlineRegression' "$RUNNER_TEMP/legacy-red.log"
+          go test -count=1 -timeout=10s -run '^TestQRDeadlineRegression$' ./...
+      - name: Build locked image
+        run: docker build --tag whatsapp-bridge-ci:${{ github.sha }} whatsapp-bridge
+      - name: Empty-store startup cannot pair or expose a QR
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name wa-ci-offline --network none --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp --env WHATSAPP_ALLOW_PAIRING=false whatsapp-bridge-ci:${{ github.sha }}
+          for attempt in $(seq 1 20); do
+            if docker logs wa-ci-offline 2>&1 | grep -q 'pairing_required'; then break; fi
+            sleep 1
+          done
+          docker logs wa-ci-offline > "$RUNNER_TEMP/startup.log" 2>&1
+          grep -q 'pairing_required' "$RUNNER_TEMP/startup.log"
+          if grep -Eiq 'scan this|qr code|@s.whatsapp.net|BEGIN.*PRIVATE' "$RUNNER_TEMP/startup.log"; then exit 1; fi
+          docker stop --timeout 10 wa-ci-offline
+      - name: Corrupt cache holds before the authentication store is touched
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/bad-store"
+          printf 'synthetic invalid message cache\n' > "$RUNNER_TEMP/bad-store/messages.db"
+          printf 'synthetic auth sentinel, not credentials\n' > "$RUNNER_TEMP/bad-store/whatsapp.db"
+          sha256sum "$RUNNER_TEMP/bad-store/messages.db" "$RUNNER_TEMP/bad-store/whatsapp.db" > "$RUNNER_TEMP/store-before.sha256"
+          docker run -d --name wa-ci-corrupt --network none --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp --mount "type=bind,source=$RUNNER_TEMP/bad-store,target=/app/store" whatsapp-bridge-ci:${{ github.sha }}
+          for attempt in $(seq 1 20); do
+            if docker logs wa-ci-corrupt 2>&1 | grep -q 'CACHE_INTEGRITY_FAILED'; then break; fi
+            sleep 1
+          done
+          docker logs wa-ci-corrupt > "$RUNNER_TEMP/corrupt-startup.log" 2>&1
+          grep -q 'CACHE_INTEGRITY_FAILED' "$RUNNER_TEMP/corrupt-startup.log"
+          if grep -Eiq 'session_store=|scan this|qr code' "$RUNNER_TEMP/corrupt-startup.log"; then exit 1; fi
+          docker stop --timeout 10 wa-ci-corrupt
+          sha256sum --check --strict "$RUNNER_TEMP/store-before.sha256"
+          test "$(find "$RUNNER_TEMP/bad-store" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Export code-only image for operator validation
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          docker save whatsapp-bridge-ci:${{ github.sha }} -o "$RUNNER_TEMP/whatsapp-bridge-image.tar"
+          cd "$RUNNER_TEMP"
+          sha256sum whatsapp-bridge-image.tar > image.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'push'
+        with:
+          name: verified-bridge-image-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/whatsapp-bridge-image.tar
+            ${{ runner.temp }}/image.sha256
+          if-no-files-found: error
+          retention-days: 3
