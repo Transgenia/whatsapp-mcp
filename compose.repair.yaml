@@ -1,0 +1,32 @@
+name: transgenia-whatsapp-repair
+services:
+  whatsapp-bridge-candidate:
+    build:
+      context: ./whatsapp-bridge
+    image: transgenia-whatsapp-bridge:repair
+    container_name: whatsapp-bridge-candidate
+    restart: "no"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    environment:
+      WHATSAPP_ALLOW_PAIRING: "${WHATSAPP_ALLOW_PAIRING:-false}"
+      WHATSAPP_ALLOW_SESSION_UPGRADE: "${WHATSAPP_ALLOW_SESSION_UPGRADE:-false}"
+    ports:
+      - "127.0.0.1:8082:8080"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16777216
+    volumes:
+      - type: bind
+        source: "${WHATSAPP_STORE_DIR:?Set an operator-reviewed store directory explicitly}"
+        target: /app/store
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
