@@ -1,5 +1,9 @@
 # WhatsApp MCP Server
 
+For the Transgenia fork's reviewed pairing and read-only pilot procedure, see
+[Operations](OPERATIONS.md). It documents separate stores, explicit session
+permissions, offline validation, and the limits of partial history.
+
 This is a Model Context Protocol (MCP) server for WhatsApp.
 
 With this you can search and read your personal Whatsapp messages (including images, videos, documents, and audio messages), search your contacts and send messages to either individuals or groups. You can also send media files including images, videos, documents, and audio messages.
@@ -29,7 +33,7 @@ Here's an example of what you can do when it's connected to Claude.
 1. **Clone this repository**
 
    ```bash
-   git clone https://github.com/lharries/whatsapp-mcp.git
+   git clone https://github.com/Transgenia/whatsapp-mcp.git
    cd whatsapp-mcp
    ```
 
@@ -175,9 +179,9 @@ By default, just the metadata of the media is stored in the local database. The 
 ### Authentication Issues
 
 - **QR Code Not Displaying**: If the QR code doesn't appear, try restarting the authentication script. If issues persist, check if your terminal supports displaying QR codes.
-- **WhatsApp Already Logged In**: If your session is already active, the Go bridge will automatically reconnect without showing a QR code.
+- **WhatsApp Already Logged In**: Reopening an existing session requires explicit `WHATSAPP_ALLOW_SESSION_UPGRADE=true` permission because the SDK may migrate its schema. Keep pairing disabled and follow [Operations](OPERATIONS.md) for the reviewed store and image.
 - **Device Limit Reached**: WhatsApp limits the number of linked devices. If you reach this limit, you'll need to remove an existing device from WhatsApp on your phone (Settings > Linked Devices).
 - **No Messages Loading**: After initial authentication, it can take several minutes for your message history to load, especially if you have many chats.
-- **WhatsApp Out of Sync**: If your WhatsApp messages get out of sync with the bridge, delete both database files (`whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`) and restart the bridge to re-authenticate.
+- **WhatsApp Out of Sync**: Stop the writer cleanly, preserve both databases and any SQLite sidecars, and follow the offline checks in [Operations](OPERATIONS.md). Do not delete or deduplicate history or reset authentication to diagnose synchronization. A consistent cache can still contain partial history.
 
 For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues). The documentation includes helpful tips for checking logs and resolving common issues.

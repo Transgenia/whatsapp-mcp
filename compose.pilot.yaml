@@ -1,0 +1,28 @@
+# Code-only pilot configuration. The operator chooses the image and store.
+# No default store, published port, automatic pairing, or restart loop.
+name: whatsapp-bridge-pilot
+services:
+  bridge:
+    image: "${WHATSAPP_PILOT_IMAGE:?Set an operator-reviewed local image ID}"
+    pull_policy: never
+    restart: "no"
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    environment:
+      WHATSAPP_ALLOW_PAIRING: "${WHATSAPP_ALLOW_PAIRING:-false}"
+      WHATSAPP_ALLOW_SESSION_UPGRADE: "${WHATSAPP_ALLOW_SESSION_UPGRADE:-false}"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16777216
+    volumes:
+      - type: bind
+        source: "${WHATSAPP_PILOT_STORE_DIR:?Set the absolute operator-reviewed pilot store directory}"
+        target: /app/store
+        bind:
+          create_host_path: false
+    logging:
+      driver: none

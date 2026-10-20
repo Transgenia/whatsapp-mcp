@@ -1,7 +1,7 @@
 name: Bridge checks
 on:
   push:
-    branches: ['DevTransgenia2026/**']
+    branches: ['main', 'DevTransgenia2026/**']
   pull_request:
     branches: [main]
   workflow_dispatch:

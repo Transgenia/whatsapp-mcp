@@ -10,3 +10,4 @@ store.bak/
 .env.*
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-bridge.exe
+/compose-vars.empty
