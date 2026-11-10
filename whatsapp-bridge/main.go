@@ -53,14 +53,24 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
-	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	// Open SQLite database for messages. The busy timeout lets the periodic LID refresh and the
+	// event handler write without one of them failing on a momentary lock.
+	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
 
-	// Create tables if they don't exist
-	_, err = db.Exec(`
+	if err := initMessageSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to create tables: %v", err)
+	}
+
+	return &MessageStore{db: db}, nil
+}
+
+// initMessageSchema creates the message cache tables if they don't exist.
+func initMessageSchema(db *sql.DB) error {
+	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS chats (
 			jid TEXT PRIMARY KEY,
 			name TEXT,
@@ -84,13 +94,8 @@ func NewMessageStore() (*MessageStore, error) {
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
-	`)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create tables: %v", err)
-	}
-
-	return &MessageStore{db: db}, nil
+	` + lidMapSchema)
+	return err
 }
 
 // Close the database connection
@@ -422,6 +427,8 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	if err != nil {
 		logger.Warnf("message_store=chat_write_failed")
 	}
+	// The message may carry the phone that matches a hidden identifier (lid_map.go).
+	noteMessageLIDs(messageStore, msg.Info, time.Now())
 
 	// Extract text content
 	content := extractTextContent(msg.Message)
@@ -434,11 +441,12 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		return
 	}
 
-	// Store message in database
+	// Store message in database. The sender keeps its server (@lid or @s.whatsapp.net): with
+	// hidden identifiers the bare user part no longer says whether it is a phone.
 	err = messageStore.StoreMessage(
 		msg.Info.ID,
 		chatJID,
-		sender,
+		msg.Info.Sender.ToNonAD().String(),
 		content,
 		msg.Info.Timestamp,
 		msg.Info.IsFromMe,
@@ -927,6 +935,7 @@ func main() {
 	defer stopConnection()
 
 	logger.Infof("bridge_state=authenticated")
+	go keepLIDMap(ctx, client, messageStore, logger)
 	startRESTServer(client, messageStore, 8080, state)
 	select {
 	case <-ctx.Done():
@@ -1042,6 +1051,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			continue
 		}
 
+		// The conversation may name both its hidden identifier and its phone (lid_map.go).
+		noteConversationLIDs(messageStore, conversation.GetLidJID(), conversation.GetPnJID(), time.Now())
+
 		// Get appropriate chat name by passing the history sync conversation directly
 		name := GetChatName(client, messageStore, jid, chatJID, conversation, "", logger)
 
@@ -1101,15 +1113,16 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					if msg.Message.Key.FromMe != nil {
 						isFromMe = *msg.Message.Key.FromMe
 					}
+					// Full identifiers (with @lid or @s.whatsapp.net), as live messages store them.
 					if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
 						sender = *msg.Message.Key.Participant
 					} else if isFromMe {
-						sender = client.Store.ID.User
+						sender = client.Store.ID.ToNonAD().String()
 					} else {
-						sender = jid.User
+						sender = jid.ToNonAD().String()
 					}
 				} else {
-					sender = jid.User
+					sender = jid.ToNonAD().String()
 				}
 
 				// Store message
